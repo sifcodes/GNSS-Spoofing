@@ -287,27 +287,28 @@ def solve_word_2_10_bits(word24, D29_star, D30_star):
     return w
 
 
-def append_parity(list10wrd5sub):
+def append_parity(list10wrd5sub25frame):
     """Takes the previous word and the current word as input
     to compute the parity for the current word. Return the 6-bit parity"""
 
-    Z_count=list10wrd5sub[1]
-    list10wrd5sub=list10wrd5sub[0]
+    Z_count=list10wrd5sub25frame[1]
+    list10wrd5sub25frame=list10wrd5sub25frame[0]
     message = bitarray(0)
-    for j in range(5):
-        for i in range(10):
-            if i == 0 and j == 0:
-                D29 = 0
-                D30 = 0
-                message.extend(compute_parity(list10wrd5sub[j][0][i],D29,D30)) #data append
+    for k in range(25):
+        for j in range(5):
+            for i in range(10):
+                if i == 0 and j == 0 and k == 0:
+                    D29 = 0
+                    D30 = 0
+                    message.extend(compute_parity(list10wrd5sub25frame[k][j][0][i],D29,D30)) #data append
 
-            elif i in (1,9):    
-                D29,D30 = message[-2], message[-1]               
-                list10wrd5sub[j][0][i] = solve_word_2_10_bits(list10wrd5sub[j][0][i], D29, D30)
-                message.extend(compute_parity(list10wrd5sub[j][0][i],D29,D30)) #data append
-            else:
-                D29,D30 = message[-2], message[-1]
-                message.extend(compute_parity(list10wrd5sub[j][0][i],D29,D30)) #data append   
+                elif i in (1,9):    
+                    D29,D30 = message[-2], message[-1]               
+                    list10wrd5sub25frame[k][j][0][i] = solve_word_2_10_bits(list10wrd5sub25frame[k][j][0][i], D29, D30)
+                    message.extend(compute_parity(list10wrd5sub25frame[k][j][0][i],D29,D30)) #data append
+                else:
+                    D29,D30 = message[-2], message[-1]
+                    message.extend(compute_parity(list10wrd5sub25frame[k][j][0][i],D29,D30)) #data append   
 
 
     return message, Z_count
@@ -2752,15 +2753,20 @@ def frame(SV,page_number,z_count):
 
 frame(1,1,Z_count_start)
 
-
+def framelist(SV,z_count):
+    frame25=[]
+    for i in range(25):
+        f=frame(SV,i+1,z_count)
+        frame25.append(f[0])
+        z_count=f[1]
+    return frame25,z_count
 
 def frames(SV: int, Z_count: int):
     frame25 = bitarray(0)
     Z_countinc = Z_count
-    for k in range(25):                                                                                 # Frame 1-25
+                                                                                     # Frame 1-25    
+    frame25,Z_countinc=append_parity(framelist(SV,Z_countinc))
         
-        unoframe,Z_countinc=append_parity(frame(SV,k+1,Z_countinc))
-        frame25 += unoframe
     return frame25
 
 (frames(1, Z_count_start))

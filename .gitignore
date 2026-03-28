@@ -1,1 +1,6 @@
 .venv/
+data/gps_signal_bb_cfloat32.dat
+data/gps_signal_if_float32.dat
+data/gps_signal4_if_float32.dat
+data/repeated_bits_x8.bin
+

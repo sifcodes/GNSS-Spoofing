@@ -1,6 +1,7 @@
 from __future__ import annotations
 from bitarray import bitarray
 import numpy as np
+import copy
 
 
 def octal10_to_bits(o):
@@ -187,27 +188,29 @@ def ca_code(PRN):
     cacode= []
     
     if PRN <= 37:
-        reg1 = []+10*[1]                          # Definer initial register (liste med 10 1'ere)
-        reg2 = []+10*[1]                          # Definer initial register (liste med 10 1'ere)
+        """Return GPS L1 C/A code for PRN as a bitarray of length 1023."""
 
-        # Definer G1
-        G1 = CA_PRN_1_37["phase_select"][PRN][0]  # Liste med kun [2, 6]
+        g2_phase_select = CA_PRN_1_37["phase_select"][PRN][0]
 
-        for i in range(1023):
+        reg1 = [1] * 10
+        reg2 = [1] * 10
+        cacode = []
 
-            # Tjek om der er 0 eller 1 på pladserne i G1 og G2, læg dem sammen. Lige = 0, ulige = 1
-            reg1temp = reg1[G1[1-1]-1] ^  reg1[G1[2-1]-1]
-            reg2temp = (reg2[G2[1-1]-1] ^  reg2[G2[2-1]-1]  ^  reg2[G2[3-1]-1] ^  
-                       reg2[G2[4-1]-1]  ^  reg2[G2[5-1]-1] ^  reg2[G2[6-1]-1])
-            
-            # Sammenlign sidste entry i reg1 med G1 og append til C/A-kode
-            cacode.append((reg1[-1]  ^  reg2[G1[1-1]-1] ^  reg2[G1[2-1]-1]))
+        for _ in range(1023):
+            # Outputs
+            g1_out = reg1[-1]
+            g2_out = reg2[g2_phase_select[0] - 1] ^ reg2[g2_phase_select[1] - 1]
 
-            # Opdater registre med shift
-            reg1 = [reg1temp]+reg1[:-1] 
-            reg2 = [reg2temp] + reg2[:-1]
+            cacode.append(g1_out ^ g2_out)
 
-        #print("Valid:", cacode[:10] == octal10_to_bits(CA_PRN_1_37["phase_select"].get(PRN)[1]))
+            # Feedbacks
+            reg1_fb = reg1[2] ^ reg1[9]   # taps 3 and 10
+            reg2_fb = reg2[1] ^ reg2[2] ^ reg2[5] ^ reg2[7] ^ reg2[8] ^ reg2[9]  # 2,3,6,8,9,10
+
+            # Shift
+            reg1 = [reg1_fb] + reg1[:-1]
+            reg2 = [reg2_fb] + reg2[:-1]
+
         return bitarray(cacode)
 
     # Metode 2: Fra PRN 38-63 not relevant as we only look at L1 band 1-32 sats
@@ -292,7 +295,7 @@ def append_parity(list10wrd5sub25frame):
     to compute the parity for the current word. Return the 6-bit parity"""
 
     Z_count=list10wrd5sub25frame[1]
-    list10wrd5sub25frame=list10wrd5sub25frame[0]
+    list10wrd5sub25frame=copy.deepcopy(list10wrd5sub25frame[0])
     message = bitarray(0)
     for k in range(25):
         for j in range(5):
@@ -789,7 +792,7 @@ def parse_rinex_utc_params(rnx_path: str):
     }
 
 
-path = "BUDD00DNK_R_20260110000_01D_MN.rnx"
+path = r"C:\Users\erik\GNSS-Spoofing\data\BUDD00DNK_R_20260110000_01D_MN.rnx"
 utc = parse_rinex_utc_params(path)
 # should give approximately:
 # {'A0': 1.8626451492e-09, 'A1': 5.329070518e-15, 'tot': 233472, 'WNt': 2401, 'dtLS': 18}
@@ -800,7 +803,7 @@ import warnings
 
 warnings.simplefilter("ignore", FutureWarning)
 
-nav = gr.load("BUDD00DNK_R_20260110000_01D_MN.rnx",use="G")   # can also be .rnx.gz in many cases
+nav = gr.load(r"C:\Users\erik\GNSS-Spoofing\data\BUDD00DNK_R_20260110000_01D_MN.rnx",use="G")   # can also be .rnx.gz in many cases
 #print(nav)  
 
 # list GPS satellites present
@@ -2773,7 +2776,7 @@ def frames(SV: int, Z_count: int):
 
 buddinge=55.738957, 12.500242, 20
 
-def modulo2_frames_runs(SV, Z_count, PRN):
+def modulo2_frames_runs(SV, Z_count,PRN):
     padding=bitarray()#(paddelay(SV,buddinge)*"0")
     ca = ca_code(PRN).copy()
     CA_original = ca * 20

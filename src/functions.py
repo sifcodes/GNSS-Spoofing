@@ -526,26 +526,24 @@ def enc_IODC(IODC: float) -> Tuple[int, str]:
     return encode_field_unsigned(IODC,1,10)
 
 
-#Toc
-def enc_Toc(Toc: float) -> Tuple[int, str]:
-    # 16 bits unsigned, LSB 2^4 seconds
-    return encode_field_unsigned(datetime_to_gpsweek_and_sow(Toc)[1],2**4,16)
-
 def datetime_to_gpsweek_and_sow(dt):
     gps0 = pd.Timestamp("1980-01-06T00:00:00Z")
     dt = pd.Timestamp(dt)
     dt = dt.tz_localize("UTC") if dt.tzinfo is None else dt.tz_convert("UTC")
     sec = (dt - gps0).total_seconds()
     week = int(sec // 604800)
-    sow = round(sec - week * 604800)
+    sow = int(round(sec - week * 604800))
     return week, sow
 
-#GPSWeek
 def enc_GPSWeek(GPSWeek: float) -> Tuple[int, str]:
-    # 10 bits unsigned, LSB 1 
-    week=int(round(GPSWeek))
-    wn10=week%1014 #rollover correction
-    return encode_field_unsigned(wn10,1,10)
+    week = int(round(GPSWeek))
+    wn10 = week % 1024
+    return encode_field_unsigned(wn10, 1, 10)
+
+def enc_Toc(Toc) -> Tuple[int, str]:
+    sow = datetime_to_gpsweek_and_sow(Toc)[1]
+    toc_units = int(round(sow / 16.0))
+    return encode_field_unsigned(toc_units, 1, 16)
 
 
 #URAIdx
@@ -1164,7 +1162,7 @@ def paddelay(SV: int ,location: tuple):
     distnace_to_sat=np.sqrt(sum((ehpm_to_ECEFlocation(SV)-ECEF(55.738957, 12.500242, 20))**2))
     return round(distnace_to_sat/(3*10**8)*1000*1023) #1000 sec to ms, 1023 prn code length
 
-Z_count_start = tables["G01"]["encoded"][0]["TOW"].n          # Encoded: Binær
+Z_count_start = tables["G01"]["encoded"][0]["TOW"].n +1         # Encoded: Binær
 
 
 def subframe(subframe_number, page_number, SV, Z_count: int):
@@ -1969,8 +1967,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             # Word 3
             data_ID_18 = "01"
             SV_page_ID_18 = int_to_bits(page_number,6)
-            alpha0 = tables[SV_input_dict[1]]["encoded"][0]["alpha0"].bits              # Atmosfære parametre er ens for alle
-            alpha1 = tables[SV_input_dict[1]]["encoded"][0]["alpha1"].bits 
+            alpha0 = tables[SV_input_dict[SV]]["encoded"][0]["alpha0"].bits              # Atmosfære parametre er ens for alle
+            alpha1 = tables[SV_input_dict[SV]]["encoded"][0]["alpha1"].bits 
 
             word3_4_18 = bitarray(0)
             word3_4_18.extend(data_ID_18)
@@ -1981,9 +1979,9 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word3_4_18)
 
             # Word 4
-            alpha2 = tables[SV_input_dict[1]]["encoded"][0]["alpha2"].bits
-            alpha3 = tables[SV_input_dict[1]]["encoded"][0]["alpha3"].bits
-            beta0 = tables[SV_input_dict[1]]["encoded"][0]["beta0"].bits
+            alpha2 = tables[SV_input_dict[SV]]["encoded"][0]["alpha2"].bits
+            alpha3 = tables[SV_input_dict[SV]]["encoded"][0]["alpha3"].bits
+            beta0 = tables[SV_input_dict[SV]]["encoded"][0]["beta0"].bits
 
             word4_24_18 = bitarray(0)
             word4_24_18.extend(alpha2)
@@ -1993,9 +1991,9 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word4_24_18)
 
             # Word 5
-            beta1 = tables[SV_input_dict[1]]["encoded"][0]["beta1"].bits
-            beta2 = tables[SV_input_dict[1]]["encoded"][0]["beta2"].bits
-            beta3 = tables[SV_input_dict[1]]["encoded"][0]["beta3"].bits
+            beta1 = tables[SV_input_dict[SV]]["encoded"][0]["beta1"].bits
+            beta2 = tables[SV_input_dict[SV]]["encoded"][0]["beta2"].bits
+            beta3 = tables[SV_input_dict[SV]]["encoded"][0]["beta3"].bits
 
             word5_4_18 = bitarray(0)
             word5_4_18.extend(beta1)
@@ -2005,7 +2003,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word5_4_18)
 
             # Word 6
-            A1 = tables[SV_input_dict[1]]["encoded"][0]["A1"].bits[:24]
+            A1 = tables[SV_input_dict[SV]]["encoded"][0]["A1"].bits[:24]
 
             word6_4_18 = bitarray(0)
             word6_4_18.extend(A1)
@@ -2013,7 +2011,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word6_4_18)
 
             # Word 7
-            A0_MSB = tables[SV_input_dict[1]]["encoded"][0]["A0"].bits[:24]
+            A0_MSB = tables[SV_input_dict[SV]]["encoded"][0]["A0"].bits[:24]
 
             word7_4_18 = bitarray(0)
             word7_4_18.extend(A0_MSB)
@@ -2021,9 +2019,9 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word7_4_18)
 
             # Word 8
-            A0_LSB = tables[SV_input_dict[1]]["encoded"][0]["A0"].bits[24:]
-            t_ot = tables[SV_input_dict[1]]["encoded"][0]["tot"].bits
-            WN_t = tables[SV_input_dict[1]]["encoded"][0]["WNt"].bits
+            A0_LSB = tables[SV_input_dict[SV]]["encoded"][0]["A0"].bits[24:]
+            t_ot = tables[SV_input_dict[SV]]["encoded"][0]["tot"].bits
+            WN_t = tables[SV_input_dict[SV]]["encoded"][0]["WNt"].bits
 
             word8_4_18 = bitarray(0)
             word8_4_18.extend(A0_LSB)
@@ -2033,9 +2031,9 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word8_4_18)
 
             # Word 9
-            delta_t_LS = tables[SV_input_dict[1]]["encoded"][0]["dtLS"].bits
-            WN_LSF = tables[SV_input_dict[1]]["encoded"][0]["WNLSF"].bits
-            DN = tables[SV_input_dict[1]]["encoded"][0]["DN"].bits
+            delta_t_LS = tables[SV_input_dict[SV]]["encoded"][0]["dtLS"].bits
+            WN_LSF = tables[SV_input_dict[SV]]["encoded"][0]["WNLSF"].bits
+            DN = tables[SV_input_dict[SV]]["encoded"][0]["DN"].bits
 
             word9_4_18 = bitarray(0)
             word9_4_18.extend(delta_t_LS)
@@ -2045,7 +2043,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word9_4_18)
 
             # Word 10
-            delta_t_LSF = tables[SV_input_dict[1]]["encoded"][0]["dtLSF"].bits
+            delta_t_LSF = tables[SV_input_dict[SV]]["encoded"][0]["dtLSF"].bits
             res19 = bitarray(14)
             # t tilføjes i parity-funktion
 

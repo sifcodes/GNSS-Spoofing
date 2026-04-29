@@ -1145,7 +1145,7 @@ def ehpm_to_ECEFlocation(SV):
 def ECEF(N: float, E: float, h: float):  
     
     a = 6378137.0                       # Halv storakse (Jordens radius)
-    f = 1 / 300                         # fra PP (GP2), flattening
+    f = 1 / 298.257223563                         # fra PP (GP2), flattening
     e = np.sqrt(2*f - f**2)       
     Nbar = a / (np.sqrt(1 - e**2*(np.sin(np.radians(N)))**2))
 
@@ -1162,11 +1162,77 @@ def paddelay(SV: int ,location: tuple):
     distnace_to_sat=np.sqrt(sum((ehpm_to_ECEFlocation(SV)-ECEF(55.738957, 12.500242, 20))**2))
     return round(distnace_to_sat/(3*10**8)*1000*1023) #1000 sec to ms, 1023 prn code length
 
-Z_count_start = tables["G01"]["encoded"][0]["TOW"].n +1         # Encoded: Binær
+#Z_count_start = tables["G01"]["encoded"][0]["TOW"].n +1         # Encoded: Binær
+
+#print(tables[SV_input_dict[1]]["encoded"][0]["TOW"])
+#print(tables[SV_input_dict[1]]["encoded"][1]["TOW"])
+
+def closest_ephemeris_index(SV: int, target_time):
+    """
+    Finds the row index in tables["Gxx"] closest to target_time.
+
+    target_time can be:
+      - pandas Timestamp / datetime / string datetime
+      - GPS TOW in seconds, as int/float
+    """
+
+    sv_name = SV_input_dict[SV]
+    df = tables[sv_name]
+
+    if isinstance(target_time, (int, float, np.integer, np.floating)):
+        # Closest by GPS time of week / transmit time
+        return (df["TOW"] - target_time).abs().idxmin()
+
+    else:
+        # Closest by datetime
+        target_time = pd.Timestamp(target_time)
+
+        # Make timezone handling robust
+        times = pd.to_datetime(df["time"])
+
+        if target_time.tzinfo is not None:
+            times = times.dt.tz_localize("UTC") if times.dt.tz is None else times.dt.tz_convert("UTC")
+            target_time = target_time.tz_convert("UTC")
+        else:
+            if getattr(times.dt, "tz", None) is not None:
+                target_time = target_time.tz_localize("UTC")
+
+        return (times - target_time).abs().idxmin()
 
 
-def subframe(subframe_number, page_number, SV, Z_count: int):
+def eph(SV: int, target_time):
+    """
+    Return encoded ephemeris dict for closest row.
+    Example:
+        eph(SV, target_time)["sqrtA"].bits
+    """
+    idx = closest_ephemeris_index(SV, target_time)
+    return tables[SV_input_dict[SV]].loc[idx, "encoded"]
+
+def eph_row(SV: int, target_time):
+    idx = closest_ephemeris_index(SV, target_time)
+    return tables[SV_input_dict[SV]].loc[idx]
+
+
+#target_time = "2026-01-11T10:00:00Z"
+
+#row = eph_row(1, target_time)
+
+#print("Selected time:", row["time"])
+#print("Selected TOW:", row["TOW"])
+#print("Selected Toe:", row["Toe"])
+
+
+
+def subframe(subframe_number, page_number, SV, Z_count: int, target_time=None):
     """If subframe is 1-3 set page_number = 0"""
+
+    if target_time is None:
+        target_time = tables[SV_input_dict[SV]]["time"].iloc[0]
+
+    E = eph(SV, target_time)
+
+
 
     # Subframe 1
     if subframe_number == 1 and page_number == 0:
@@ -1204,11 +1270,11 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words1_24.append(word2_1)
 
         # Word 3
-        GPS_week = tables[SV_input_dict[SV]]["encoded"][0]["GPSWeek"].bits                                                                 # Current GPS week number
+        GPS_week = E["GPSWeek"].bits                                                                 # Current GPS week number
         code_flag = [1, 0]
-        URA_index = tables[SV_input_dict[SV]]["encoded"][0]["URAIdx"].bits                      # Ideal: 0000
+        URA_index = E["URAIdx"].bits                      # Ideal: 0000
         SV_health = bitarray(6)                                                                 # Healthy: 000000
-        IODC = tables[SV_input_dict[SV]]["encoded"][0]["IODC"].bits[:2]                         # First 2 bits of IODC, the rest (8 bits) in word 8
+        IODC = E["IODC"].bits[:2]                         # First 2 bits of IODC, the rest (8 bits) in word 8
         
 
         word3_1 = bitarray(0)
@@ -1248,7 +1314,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
 
         # Word 7
         reserved = bitarray(16)
-        T_GD = tables[SV_input_dict[SV]]["encoded"][0]["TGD"].bits                               # Estimated group delay
+        T_GD = E["TGD"].bits                               # Estimated group delay
 
         word7_1 = bitarray(0)
         word7_1.extend(reserved)
@@ -1257,8 +1323,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words1_24.append(word7_1)
 
         # Word 8
-        IODC = tables[SV_input_dict[SV]]["encoded"][0]["IODC"].bits[2:]                          # The rest of the IODC from word 3
-        t_OC = tables[SV_input_dict[SV]]["encoded"][0]["Toc"].bits
+        IODC = E["IODC"].bits[2:]                          # The rest of the IODC from word 3
+        t_OC = E["Toc"].bits
 
         word8_1 = bitarray(0)
         word8_1.extend(IODC)
@@ -1267,8 +1333,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words1_24.append(word8_1)
 
         # Word 9
-        af2 = tables[SV_input_dict[SV]]["encoded"][0]["af2"].bits                               # Second order clock correction coefficient? er bare 0'er
-        af1 = tables[SV_input_dict[SV]]["encoded"][0]["af1"].bits                               # First-order clock correction coefficient
+        af2 = E["af2"].bits                               # Second order clock correction coefficient? er bare 0'er
+        af1 = E["af1"].bits                               # First-order clock correction coefficient
 
         word9_1 = bitarray(0)
         word9_1.extend(af2) 
@@ -1277,7 +1343,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words1_24.append(word9_1)
 
         # Word 10
-        af0 = tables[SV_input_dict[SV]]["encoded"][0]["af0"].bits                               # Constant clock correction coefficient
+        af0 = E["af0"].bits                               # Constant clock correction coefficient
         # t tilføjes i parity-funktion                                                          # Noninformation bearing bits used for parity correction
 
         word10_1 = bitarray(0)
@@ -1324,8 +1390,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words2_24.append(word2_2)
 
         # Word 3
-        IODE = tables[SV_input_dict[SV]]["encoded"][0]["IODE"].bits                             # Issue of data Ephemeris
-        C_rs = tables[SV_input_dict[SV]]["encoded"][0]["Crs"].bits                              # Radius correction
+        IODE = E["IODE"].bits                             # Issue of data Ephemeris
+        C_rs = E["Crs"].bits                              # Radius correction
 
         word3_2 = bitarray(0)
         word3_2.extend(IODE)
@@ -1334,8 +1400,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words2_24.append(word3_2)
 
         # Word 4
-        delta_n = tables[SV_input_dict[SV]]["encoded"][0]["DeltaN"].bits                        # Mean motion difference
-        M0_MSB = tables[SV_input_dict[SV]]["encoded"][0]["M0"].bits[:8]                         # First 8 bits of mean anomaly
+        delta_n = E["DeltaN"].bits                        # Mean motion difference
+        M0_MSB = E["M0"].bits[:8]                         # First 8 bits of mean anomaly
 
         word4_2 = bitarray(0)
         word4_2.extend(delta_n)
@@ -1344,7 +1410,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words2_24.append(word4_2)
 
         # Word 5
-        M0_LSB = tables[SV_input_dict[SV]]["encoded"][0]["M0"].bits[8:]                         # Last 24 bits of mean anomaly
+        M0_LSB = E["M0"].bits[8:]                         # Last 24 bits of mean anomaly
 
         word5_2 = bitarray(0)
         word5_2.extend(M0_LSB)
@@ -1352,8 +1418,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words2_24.append(word5_2)
 
         # Word 6
-        C_uc = tables[SV_input_dict[SV]]["encoded"][0]["Cuc"].bits                              # Latitude correction
-        e_MSB = tables[SV_input_dict[SV]]["encoded"][0]["Eccentricity"].bits[:8]                # Eccentricity, first 8 bits
+        C_uc = E["Cuc"].bits                              # Latitude correction
+        e_MSB = E["Eccentricity"].bits[:8]                # Eccentricity, first 8 bits
 
         word6_2 = bitarray(0)
         word6_2.extend(C_uc)
@@ -1362,7 +1428,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words2_24.append(word6_2)
 
         # Word 7
-        e_LSB = tables[SV_input_dict[SV]]["encoded"][0]["Eccentricity"].bits[8:]              # Last 24 bits of eccentricity
+        e_LSB = E["Eccentricity"].bits[8:]              # Last 24 bits of eccentricity
 
         word7_2 = bitarray(0)
         word7_2.extend(e_LSB)
@@ -1370,8 +1436,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words2_24.append(word7_2)
 
         # Word 8
-        C_us = tables[SV_input_dict[SV]]["encoded"][0]["Cus"].bits                            # Latitude correction
-        sqrtA_MSB = tables[SV_input_dict[SV]]["encoded"][0]["sqrtA"].bits[:8]                 # First 8 bits of sqrtA (semi-major axis)
+        C_us = E["Cus"].bits                            # Latitude correction
+        sqrtA_MSB = E["sqrtA"].bits[:8]                 # First 8 bits of sqrtA (semi-major axis)
 
         word8_2 = bitarray(0)
         word8_2.extend(C_us)
@@ -1380,7 +1446,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words2_24.append(word8_2)
 
         # Word 9
-        sqrtA_LSB = tables[SV_input_dict[SV]]["encoded"][0]["sqrtA"].bits[8:]                 # Last 24 bits of sqrtA (semi-major axis)
+        sqrtA_LSB = E["sqrtA"].bits[8:]                 # Last 24 bits of sqrtA (semi-major axis)
 
         word9_2 = bitarray(0)
         word9_2.extend(sqrtA_LSB)
@@ -1388,8 +1454,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words2_24.append(word9_2)
 
         # Word 10
-        t_oe = tables[SV_input_dict[SV]]["encoded"][0]["Toe"].bits                            # Ephemeris data
-        FIF = tables[SV_input_dict[SV]]["encoded"][0]["FitIntvl"].bits                        # Fit Interval Flag
+        t_oe = E["Toe"].bits                            # Ephemeris data
+        FIF = E["FitIntvl"].bits                        # Fit Interval Flag
         AODO = "00000"                                                                        # Age of Data Offset
         # t tilføjes i parity-funktion
 
@@ -1438,8 +1504,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words3_24.append(word2_3)
 
         # Word 3
-        C_ic = tables[SV_input_dict[SV]]["encoded"][0]["Cic"].bits
-        Omega0_MSB = tables[SV_input_dict[SV]]["encoded"][0]["Omega0"].bits[:8]              # First 8 bits, ascending node
+        C_ic = E["Cic"].bits
+        Omega0_MSB = E["Omega0"].bits[:8]              # First 8 bits, ascending node
 
         word3_3 = bitarray(0)
         word3_3.extend(C_ic)
@@ -1448,7 +1514,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words3_24.append(word3_3)
 
         # Word 4
-        Omega0_LSB = tables[SV_input_dict[SV]]["encoded"][0]["Omega0"].bits[8:]              # Last 24 bits of ascending node
+        Omega0_LSB = E["Omega0"].bits[8:]              # Last 24 bits of ascending node
 
         word4_3 = bitarray(0)
         word4_3.extend(Omega0_LSB)
@@ -1456,8 +1522,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words3_24.append(word4_3)
 
         # Word 5
-        C_is = tables[SV_input_dict[SV]]["encoded"][0]["Cis"].bits
-        i0 = tables[SV_input_dict[SV]]["encoded"][0]["Io"].bits[:8]                         # First 8 bits of inclination angle
+        C_is = E["Cis"].bits
+        i0 = E["Io"].bits[:8]                         # First 8 bits of inclination angle
 
         word5_3 = bitarray(0)
         word5_3.extend(C_is)
@@ -1466,7 +1532,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words3_24.append(word5_3)
 
         # Word 6
-        i0 = tables[SV_input_dict[SV]]["encoded"][0]["Io"].bits[8:]                        # Last 24-bits of inclination angle
+        i0 = E["Io"].bits[8:]                        # Last 24-bits of inclination angle
 
         word6_3 = bitarray(0)
         word6_3.extend(i0)
@@ -1474,8 +1540,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words3_24.append(word6_3)
 
         # Word 7
-        C_rc = tables[SV_input_dict[SV]]["encoded"][0]["Crc"].bits
-        w = tables[SV_input_dict[SV]]["encoded"][0]["omega"].bits[:8]                      # First 8 bits of omega (argument of perigee)
+        C_rc = E["Crc"].bits
+        w = E["omega"].bits[:8]                      # First 8 bits of omega (argument of perigee)
 
         word7_3 = bitarray(0)
         word7_3.extend(C_rc)
@@ -1484,7 +1550,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words3_24.append(word7_3)
 
         # Word 8
-        w = tables[SV_input_dict[SV]]["encoded"][0]["omega"].bits[8:]                      # Last 24 bits of argument of perigee
+        w = E["omega"].bits[8:]                      # Last 24 bits of argument of perigee
 
         word8_3 = bitarray(0)
         word8_3.extend(w)
@@ -1492,7 +1558,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words3_24.append(word8_3)
 
         # Word 9 
-        Omega_dot = tables[SV_input_dict[SV]]["encoded"][0]["OmegaDot"].bits               # Rate of node's right ascension
+        Omega_dot = E["OmegaDot"].bits               # Rate of node's right ascension
 
         word9_3 = bitarray(0)
         word9_3.extend(Omega_dot)
@@ -1500,8 +1566,8 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         words3_24.append(word9_3)
 
         # Word 10
-        IODE = tables[SV_input_dict[SV]]["encoded"][0]["IODE"].bits                       # Issue of Data Ephemeris
-        IDOT = tables[SV_input_dict[SV]]["encoded"][0]["IDOT"].bits                       # Rate of inclination angle
+        IODE = E["IODE"].bits                       # Issue of Data Ephemeris
+        IDOT = E["IDOT"].bits                       # Rate of inclination angle
         # t tilføjes i parity-funktion
 
         word10_3 = bitarray(0)
@@ -1550,11 +1616,25 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_alm.append(word2_4_alm)
 
             if SV_input_dict[SV_page_subframe5[page_number]] in tables:         # Error handling: If a satellite does not exist in the data-set
+                
+                target_SV = SV_page_subframe4[page_number]
+                E_alm = eph(target_SV, target_time)
+
+                e = E_alm["Eccentricity"].bits[:16]
+                t_oa = E_alm["TOA"].bits
+                delta_i = E_alm["deltai"].bits
+                Omega_dot = E_alm["OmegaDot"].bits[:16]
+                sqrtA = E_alm["sqrtA"].bits[:24]
+                Omega0 = E_alm["Omega0"].bits[:24]
+                w = E_alm["omega"].bits[:24]
+                M0 = E_alm["M0"].bits[:24]
+                af0_MSB = E_alm["af0"].bits[:8]
+                af1 = E_alm["af1"].bits[:11]
+                af0_LSB = E_alm["af0"].bits[8:11]
 
                 # Word 3
                 data_ID = "01" 
                 SV_ID = int_to_bits(SV_page_subframe4[page_number],6)
-                e = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["Eccentricity"].bits[:16]      
 
                 word3_4_alm = bitarray(0)
                 word3_4_alm.extend(data_ID)
@@ -1564,9 +1644,7 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words4_24_alm.append(word3_4_alm)
 
                 # Word 4
-                t_oa = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["TOA"].bits
-                delta_i = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["deltai"].bits
-
+                
                 word4_4_alm = bitarray(0)
                 word4_4_alm.extend(t_oa)
                 word4_4_alm.extend(delta_i)
@@ -1574,7 +1652,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words4_24_alm.append(word4_4_alm)
 
                 # Word 5
-                Omega_dot = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["OmegaDot"].bits[:16]
                 SV_health = "00000000" 
 
                 word5_4_alm = bitarray(0)
@@ -1584,7 +1661,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words4_24_alm.append(word5_4_alm)
 
                 # Word 6
-                sqrtA = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["sqrtA"].bits[:24]
 
                 word6_4_alm = bitarray(0)
                 word6_4_alm.extend(sqrtA)
@@ -1592,7 +1668,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words4_24_alm.append(word6_4_alm)
 
                 # Word 7
-                Omega0 = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["Omega0"].bits[:24]
 
                 word7_4_alm = bitarray(0)
                 word7_4_alm.extend(Omega0)
@@ -1600,7 +1675,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words4_24_alm.append(word7_4_alm)
 
                 # Word 8
-                w = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["omega"].bits[:24]          # omega
 
                 word8_4_alm = bitarray(0)
                 word8_4_alm.extend(w)
@@ -1608,7 +1682,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words4_24_alm.append(word8_4_alm)
 
                 # Word 9
-                M0 = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["M0"].bits[:24]
 
                 word9_4_alm = bitarray(0)
                 word9_4_alm.extend(M0)
@@ -1616,9 +1689,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words4_24_alm.append(word9_4_alm)
 
                 # Word 10
-                af0_MSB = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["af0"].bits[:8]
-                af1 = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["af1"].bits[:11]
-                af0_LSB = tables[SV_input_dict[SV_page_subframe4[page_number]]]["encoded"][0]["af0"].bits[8:11]
                 # t tilføjes i parity-funktion
 
                 word10_4_alm = bitarray(0)
@@ -1932,6 +2002,25 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
         elif page_number == 18:
             words4_24_18 = []
 
+
+            alpha0 = E["alpha0"].bits
+            alpha1 = E["alpha1"].bits
+            alpha2 = E["alpha2"].bits
+            alpha3 = E["alpha3"].bits
+            beta0  = E["beta0"].bits
+            beta1  = E["beta1"].bits
+            beta2  = E["beta2"].bits
+            beta3  = E["beta3"].bits
+            A1     = E["A1"].bits[:24]
+            A0_MSB = E["A0"].bits[:24]
+            A0_LSB = E["A0"].bits[24:]
+            t_ot   = E["tot"].bits
+            WN_t   = E["WNt"].bits
+            delta_t_LS  = E["dtLS"].bits
+            WN_LSF      = E["WNLSF"].bits
+            DN          = E["DN"].bits
+            delta_t_LSF = E["dtLSF"].bits
+
             # Word 1
             preamble = [1,0,0,0,1,0,1,1]
             TLM = bitarray(14)                              
@@ -1967,8 +2056,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             # Word 3
             data_ID_18 = "01"
             SV_page_ID_18 = int_to_bits(page_number,6)
-            alpha0 = tables[SV_input_dict[SV]]["encoded"][0]["alpha0"].bits              # Atmosfære parametre er ens for alle
-            alpha1 = tables[SV_input_dict[SV]]["encoded"][0]["alpha1"].bits 
 
             word3_4_18 = bitarray(0)
             word3_4_18.extend(data_ID_18)
@@ -1979,10 +2066,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word3_4_18)
 
             # Word 4
-            alpha2 = tables[SV_input_dict[SV]]["encoded"][0]["alpha2"].bits
-            alpha3 = tables[SV_input_dict[SV]]["encoded"][0]["alpha3"].bits
-            beta0 = tables[SV_input_dict[SV]]["encoded"][0]["beta0"].bits
-
             word4_24_18 = bitarray(0)
             word4_24_18.extend(alpha2)
             word4_24_18.extend(alpha3)
@@ -1991,10 +2074,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word4_24_18)
 
             # Word 5
-            beta1 = tables[SV_input_dict[SV]]["encoded"][0]["beta1"].bits
-            beta2 = tables[SV_input_dict[SV]]["encoded"][0]["beta2"].bits
-            beta3 = tables[SV_input_dict[SV]]["encoded"][0]["beta3"].bits
-
             word5_4_18 = bitarray(0)
             word5_4_18.extend(beta1)
             word5_4_18.extend(beta2)
@@ -2003,7 +2082,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word5_4_18)
 
             # Word 6
-            A1 = tables[SV_input_dict[SV]]["encoded"][0]["A1"].bits[:24]
 
             word6_4_18 = bitarray(0)
             word6_4_18.extend(A1)
@@ -2011,7 +2089,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word6_4_18)
 
             # Word 7
-            A0_MSB = tables[SV_input_dict[SV]]["encoded"][0]["A0"].bits[:24]
 
             word7_4_18 = bitarray(0)
             word7_4_18.extend(A0_MSB)
@@ -2019,10 +2096,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word7_4_18)
 
             # Word 8
-            A0_LSB = tables[SV_input_dict[SV]]["encoded"][0]["A0"].bits[24:]
-            t_ot = tables[SV_input_dict[SV]]["encoded"][0]["tot"].bits
-            WN_t = tables[SV_input_dict[SV]]["encoded"][0]["WNt"].bits
-
             word8_4_18 = bitarray(0)
             word8_4_18.extend(A0_LSB)
             word8_4_18.extend(t_ot)
@@ -2031,10 +2104,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word8_4_18)
 
             # Word 9
-            delta_t_LS = tables[SV_input_dict[SV]]["encoded"][0]["dtLS"].bits
-            WN_LSF = tables[SV_input_dict[SV]]["encoded"][0]["WNLSF"].bits
-            DN = tables[SV_input_dict[SV]]["encoded"][0]["DN"].bits
-
             word9_4_18 = bitarray(0)
             word9_4_18.extend(delta_t_LS)
             word9_4_18.extend(WN_LSF)
@@ -2043,7 +2112,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             words4_24_18.append(word9_4_18)
 
             # Word 10
-            delta_t_LSF = tables[SV_input_dict[SV]]["encoded"][0]["dtLSF"].bits
             res19 = bitarray(14)
             # t tilføjes i parity-funktion
 
@@ -2431,10 +2499,26 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
 
             if SV_input_dict[SV_page_subframe5[page_number]] in tables:         # Error handling: If a satellite does not exist in the data-set
 
+                target_SV = SV_page_subframe5[page_number]
+                E_alm = eph(target_SV, target_time)
+
+                e_5 = E_alm["Eccentricity"].bits[:16]
+
+                e = E_alm["Eccentricity"].bits[:16]
+                t_oa = E_alm["TOA"].bits
+                delta_i = E_alm["deltai"].bits
+                Omega_dot = E_alm["OmegaDot"].bits[:16]
+                sqrtA = E_alm["sqrtA"].bits[:24]
+                Omega0 = E_alm["Omega0"].bits[:24]
+                w = E_alm["omega"].bits[:24]
+                M0 = E_alm["M0"].bits[:24]
+                af0_MSB = E_alm["af0"].bits[:8]
+                af1 = E_alm["af1"].bits[:11]
+                af0_LSB = E_alm["af0"].bits[8:11]
+
                 # Word 3
                 data_ID_5 = "01" 
                 SV_ID_5 = int_to_bits(SV_page_subframe5[page_number],6)
-                e_5 = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["Eccentricity"].bits[:16]
 
                 word3_5 = bitarray(0)
                 word3_5.extend(data_ID_5)
@@ -2444,8 +2528,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words5_24.append(word3_5)
 
                 # Word 4
-                t_oa = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["TOA"].bits[:8]
-                delta_i = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["deltai"].bits[:16]
 
                 word4_5 = bitarray(0)
                 word4_5.extend(t_oa)
@@ -2454,7 +2536,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words5_24.append(word4_5)
 
                 # Word 5
-                Omega_dot = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["OmegaDot"].bits[:16]
                 SV_health = "00000000" # 8 bits
 
                 word5_5 = bitarray(0)
@@ -2464,7 +2545,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words5_24.append(word5_5)
 
                 # Word 6
-                sqrtA = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["sqrtA"].bits[:24]
 
                 word6_5 = bitarray(0)
                 word6_5.extend(sqrtA)
@@ -2472,7 +2552,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words5_24.append(word6_5)
 
                 # Word 7
-                Omega0 = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["Omega0"].bits[:24]
 
                 word7_5 = bitarray(0)
                 word7_5.extend(Omega0)
@@ -2480,7 +2559,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words5_24.append(word7_5)
 
                 # Word 8
-                w = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["omega"].bits[:24]
 
                 word8_5 = bitarray(0)
                 word8_5.extend(w)
@@ -2488,7 +2566,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words5_24.append(word8_5)
 
                 # Word 9
-                M0 = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["M0"].bits[:24]
 
                 word9_5= bitarray(0)
                 word9_5.extend(M0)
@@ -2496,9 +2573,6 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
                 words5_24.append(word9_5)
 
                 # Word 10
-                af0_MSB = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["af0"].bits[:8]
-                af1 = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["af1"].bits[:11]
-                af0_LSB = tables[SV_input_dict[SV_page_subframe5[page_number]]]["encoded"][0]["af0"].bits[8:11]
                 # t tilføjes i parity-funktion
 
                 word10_5 = bitarray(0)
@@ -2629,8 +2703,12 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             # Word 3
             data_ID_5_25 = "01"
             SV_page_ID_5_25 = int_to_bits(page_number,6)
-            t_oa_5 = tables[SV_input_dict[SV_page_subframe5[page_number-1]]]["encoded"][0]["TOA"].bits
-            WN_a = tables[SV_input_dict[SV_page_subframe5[page_number-1]]]["encoded"][0]["WNa"].bits
+
+            target_SV = SV_page_subframe5[page_number - 1]
+            E_alm = eph(target_SV, target_time)
+
+            t_oa_5 = E_alm["TOA"].bits
+            WN_a = E_alm["WNa"].bits
 
             word3_5_24_25 = bitarray(0)
             word3_5_24_25.extend(data_ID_5_25)
@@ -2737,51 +2815,51 @@ def subframe(subframe_number, page_number, SV, Z_count: int):
             return words5_24_25, Z_count
 
 
-subframe(2, 0, 1, Z_count_start)
+#subframe(2, 0, 1, Z_count_start)
 
-def frame(SV,page_number,z_count):
+def frame(SV,page_number,z_count,target_time=None):
     oneframe=[]
     for i in range(3):
-        oneframe.append(subframe(i+1,0,SV,z_count))
+        oneframe.append(subframe(i+1,0,SV,z_count,target_time=target_time))
         z_count += 1
 
-    oneframe.append(subframe(4,page_number,SV,z_count))
+    oneframe.append(subframe(4,page_number,SV,z_count,target_time=target_time))
     z_count += 1
 
-    oneframe.append(subframe(5,page_number,SV,z_count))
+    oneframe.append(subframe(5,page_number,SV,z_count,target_time=target_time))
     z_count += 1
     return oneframe, z_count
 
-frame(1,1,Z_count_start)
+#frame(1,1,Z_count_start)
 
-def framelist(SV,z_count):
+def framelist(SV,z_count,target_time=None):
     frame25=[]
     for i in range(25):
-        f=frame(SV,i+1,z_count)
+        f=frame(SV,i+1,z_count,target_time=target_time)
         frame25.append(f[0])
         z_count=f[1]
     return frame25,z_count
 
-def frames(SV: int, Z_count: int):
+def frames(SV: int, Z_count: int,target_time=None):
     frame25 = bitarray(0)
     Z_countinc = Z_count
                                                                                      # Frame 1-25    
-    frame25,Z_countinc=append_parity(framelist(SV,Z_countinc))
+    frame25,Z_countinc=append_parity(framelist(SV,Z_countinc,target_time=target_time))
         
     return frame25
 
-(frames(1, Z_count_start))
+#frames(1, Z_count_start,target_time=None))
 
 buddinge=55.738957, 12.500242, 20
 
-def modulo2_frames_runs(SV, Z_count,PRN):
+def modulo2_frames_runs(SV, Z_count,PRN,target_time=None):
     padding=bitarray()#(paddelay(SV,buddinge)*"0")
     ca = ca_code(PRN).copy()
     CA_original = ca * 20
     CA_inverted = (~ca) * 20            # precompute PRN codes, original and inv
 
 
-    flags = bitarray(frames(SV, Z_count))            # bitarray
+    flags = bitarray(frames(SV, Z_count,target_time=target_time))            # bitarray
 
     assert len(CA_original) == 20460
     assert len(CA_inverted) == 20460
@@ -2812,4 +2890,852 @@ def modulo2_frames_runs(SV, Z_count,PRN):
 
     return padding+out
 
-res = modulo2_frames_runs(1,Z_count_start,1)
+#res = modulo2_frames_runs(1,Z_count_start,1,target_time=None)
+#print(res[:1000])
+
+
+
+# =============================================================================
+# GPS TIME / EPHEMERIS SELECTION / SATELLITE POSITION / DELAY HELPERS
+# =============================================================================
+
+C = 299792458.0
+GPS_UTC_LEAP_SECONDS = 18  
+
+
+def check_gps_week_crossing(t_k):
+    """
+    GPS week rollover check.
+
+    GPS ephemeris time differences should be wrapped to +/- half a GPS week.
+    This is needed when a time is near the beginning/end of a GPS week.
+    """
+    if t_k > 302400:
+        t_k -= 604800
+    elif t_k < -302400:
+        t_k += 604800
+
+    return t_k
+
+
+def utc_datetime_to_gpsweek_and_sow(dt, leap_seconds=GPS_UTC_LEAP_SECONDS):
+    """
+    Convert a UTC-like observation datetime to GPS week and GPS seconds-of-week.
+
+    OBS times from receiver files are normally UTC-like timestamps.
+    GPS time does not include leap seconds, so for your 2026 data:
+
+        GPS time = UTC time + 18 seconds
+
+    Returns:
+        gps_week : full GPS week number
+        sow      : GPS seconds-of-week
+    """
+    gps0 = pd.Timestamp("1980-01-06T00:00:00Z")  # GPS epoch
+
+    dt = pd.Timestamp(dt)
+
+    if dt.tzinfo is None:
+        dt = dt.tz_localize("UTC")
+    else:
+        dt = dt.tz_convert("UTC")
+
+    # Convert UTC -> GPS time
+    dt_gps = dt + pd.Timedelta(seconds=leap_seconds)
+
+    sec = (dt_gps - gps0).total_seconds()
+    gps_week = int(sec // 604800)
+    sow = float(sec - gps_week * 604800)
+
+    return gps_week, sow
+
+
+def rinex_nav_datetime_to_gpsweek_and_sow(dt):
+    """
+    Convert a RINEX NAV ephemeris epoch to GPS week and seconds-of-week.
+
+    Important:
+    This does NOT add leap seconds.
+
+    Reason:
+    The NAV epoch from a broadcast ephemeris is already a GPS-system reference
+    epoch in practice, even if georinex/pandas displays it as a normal datetime.
+    We do not want to accidentally shift Toc/Toe-related quantities by 18 seconds.
+    """
+    gps0 = pd.Timestamp("1980-01-06T00:00:00Z")
+
+    dt = pd.Timestamp(dt)
+
+    if dt.tzinfo is None:
+        dt = dt.tz_localize("UTC")
+    else:
+        dt = dt.tz_convert("UTC")
+
+    sec = (dt - gps0).total_seconds()
+    gps_week = int(sec // 604800)
+    sow = float(sec - gps_week * 604800)
+
+    return gps_week, sow
+
+
+def select_eph_idx(SV: int, t_gps_sow: float):
+    """
+    Select the ephemeris row closest to the requested GPS seconds-of-week.
+
+    This uses Toe, not TransTime/TOW.
+
+    Toe is the ephemeris reference time and is the correct quantity for choosing
+    which orbital parameter set should be used.
+    """
+    sv_key = SV_input_dict[SV]
+    eph_table = tables[sv_key]
+
+    toes = eph_table["Toe"].to_numpy(dtype=float)
+
+    dts = np.array([
+        check_gps_week_crossing(t_gps_sow - toe)
+        for toe in toes
+    ])
+
+    return int(np.argmin(np.abs(dts)))
+
+
+def eph_row(SV: int, target_time=None):
+    """
+    Return the full ephemeris table row closest to target_time.
+
+    target_time can be:
+      - None:
+            use first available TOW for that satellite
+      - int/float:
+            interpreted as GPS seconds-of-week
+      - datetime/string/Timestamp:
+            interpreted as UTC observation time and converted to GPS SOW
+    """
+    sv_key = SV_input_dict[SV]
+
+    if target_time is None:
+        target_time = tables[sv_key]["TOW"].iloc[0]
+
+    if isinstance(target_time, (int, float, np.integer, np.floating)):
+        t_gps_sow = float(target_time)
+    else:
+        _, t_gps_sow = utc_datetime_to_gpsweek_and_sow(target_time)
+
+    idx = select_eph_idx(SV, t_gps_sow)
+
+    return tables[sv_key].iloc[idx]
+
+
+def eph(SV: int, target_time=None):
+    """
+    Return encoded ephemeris dict closest to target_time.
+
+    This is the helper used by your navigation-message generation code:
+
+        E = eph(SV, target_time)
+        E["sqrtA"].bits
+        E["Toe"].bits
+        E["af0"].bits
+
+    It uses the same Toe-based selection as the delay/ECEF code, so your
+    simulator and your nav bits stay synchronized.
+    """
+    row = eph_row(SV, target_time)
+    return row["encoded"]
+
+
+def debug_selected_eph(SV: int, target_time=None):
+    """
+    Debug helper to print which ephemeris row is selected.
+
+    Useful for checking that changing target_time actually changes the selected
+    NAV row when expected.
+    """
+    sv_key = SV_input_dict[SV]
+
+    if target_time is None:
+        target_time = tables[sv_key]["TOW"].iloc[0]
+
+    if isinstance(target_time, (int, float, np.integer, np.floating)):
+        t_gps_sow = float(target_time)
+    else:
+        _, t_gps_sow = utc_datetime_to_gpsweek_and_sow(target_time)
+
+    idx = select_eph_idx(SV, t_gps_sow)
+    row = tables[sv_key].iloc[idx]
+
+    print("SV:", SV)
+    print("target_time:", target_time)
+    print("target GPS SOW:", t_gps_sow)
+    print("selected eph_idx:", idx)
+    print("selected NAV time:", row["time"])
+    print("selected Toe:", row["Toe"])
+    print("selected TOW:", row["TOW"])
+
+    return row
+
+
+def ehpm_to_ECEFlocation_at_time(SV: int, t_gps_sow: float, eph_idx=None):
+    """
+    Find satellite ECEF position at a given GPS seconds-of-week.
+
+    Inputs:
+        SV:
+            Satellite PRN as integer, e.g. 1 for G01.
+
+        t_gps_sow:
+            GPS seconds-of-week at which to compute the satellite position.
+
+        eph_idx:
+            Optional fixed ephemeris index.
+            If None, the closest ephemeris row is chosen using Toe.
+
+    Returns:
+        XYZ ECEF coordinates in meters.
+    """
+
+    # Constants
+    mu = 3.986005e14              # Earth gravitational constant for GPS, m^3/s^2
+    omegaDot_e = 7.2921151467e-5  # Earth rotation rate, rad/s
+
+    sv_key = SV_input_dict[SV]
+    eph_table = tables[sv_key]
+
+    if eph_idx is None:
+        eph_idx = select_eph_idx(SV, t_gps_sow)
+
+    # Pull ephemeris parameters from selected row
+    M_o = eph_table["M0"].iloc[eph_idx]          # Mean anomaly at reference time
+    Deltan = eph_table["DeltaN"].iloc[eph_idx]   # Mean motion correction
+    a = eph_table["sqrtA"].iloc[eph_idx] ** 2    # Semi-major axis
+    e = eph_table["e"].iloc[eph_idx]             # Eccentricity
+    w = eph_table["omega"].iloc[eph_idx]         # Argument of perigee
+
+    C_uc = eph_table["Cuc"].iloc[eph_idx]        # Cosine latitude correction
+    C_us = eph_table["Cus"].iloc[eph_idx]        # Sine latitude correction
+    C_rs = eph_table["Crs"].iloc[eph_idx]        # Sine radius correction
+    C_rc = eph_table["Crc"].iloc[eph_idx]        # Cosine radius correction
+
+    i_0 = eph_table["i0"].iloc[eph_idx]          # Inclination at reference time
+    i_dot = eph_table["IDOT"].iloc[eph_idx]      # Inclination rate
+    C_ic = eph_table["Cic"].iloc[eph_idx]        # Cosine inclination correction
+    C_is = eph_table["Cis"].iloc[eph_idx]        # Sine inclination correction
+
+    Omega0 = eph_table["Omega0"].iloc[eph_idx]   # Longitude of ascending node
+    OmegaDot = eph_table["OmegaDot"].iloc[eph_idx]  # Rate of right ascension
+
+    t_oe = eph_table["Toe"].iloc[eph_idx]        # Ephemeris reference time
+
+    # Time from ephemeris reference epoch
+    t_k = check_gps_week_crossing(t_gps_sow - t_oe)
+
+    # Corrected mean motion
+    n0 = np.sqrt(mu / a**3)
+    n = n0 + Deltan
+
+    # Mean anomaly
+    M_k = M_o + n * t_k
+
+    # Solve Kepler's equation for eccentric anomaly
+    E_k = solve_kepler_E(M_k, e)
+
+    # Convert eccentric anomaly to true anomaly
+    v_k = np.arctan2(
+        np.sqrt(1 - e**2) * np.sin(E_k),
+        np.cos(E_k) - e
+    )
+
+    # Argument of latitude before harmonic corrections
+    phi_k = w + v_k
+
+    # Corrected argument of latitude
+    u_k = (
+        phi_k
+        + C_uc * np.cos(2 * phi_k)
+        + C_us * np.sin(2 * phi_k)
+    )
+
+    # Corrected orbital radius
+    r_k = (
+        a * (1 - e * np.cos(E_k))
+        + C_rc * np.cos(2 * phi_k)
+        + C_rs * np.sin(2 * phi_k)
+    )
+
+    # Corrected inclination
+    i_k = (
+        i_0
+        + i_dot * t_k
+        + C_ic * np.cos(2 * phi_k)
+        + C_is * np.sin(2 * phi_k)
+    )
+
+    # Corrected longitude of ascending node
+    lambda_k = (
+        Omega0
+        + (OmegaDot - omegaDot_e) * t_k
+        - omegaDot_e * t_oe
+    )
+
+    # Position in orbital plane
+    rk_vec = np.array([r_k, 0, 0], dtype=float)
+
+    # Rotate into ECEF
+    XYZ = R3(-lambda_k) @ R1(-i_k) @ R3(-u_k) @ rk_vec
+
+    return np.asarray(XYZ, dtype=float).reshape(3)
+
+
+def satellite_clock_correction(SV: int, t_gps_sow: float, eph_idx=None):
+    """
+    Compute satellite clock correction in seconds.
+
+    Includes:
+      - af0
+      - af1
+      - af2
+      - relativistic correction
+      - TGD for L1 C/A convention
+
+    Returns:
+        dtsv in seconds
+    """
+    F = -4.442807633e-10  # Relativistic correction constant
+
+    sv_key = SV_input_dict[SV]
+    eph_table = tables[sv_key]
+
+    if eph_idx is None:
+        eph_idx = select_eph_idx(SV, t_gps_sow)
+
+    # Satellite clock coefficients
+    af0 = eph_table["af0"].iloc[eph_idx]
+    af1 = eph_table["af1"].iloc[eph_idx]
+    af2 = eph_table["af2"].iloc[eph_idx]
+    TGD = eph_table["TGD"].iloc[eph_idx]
+
+    # Orbital values needed for relativistic correction
+    sqrtA = eph_table["sqrtA"].iloc[eph_idx]
+    e = eph_table["e"].iloc[eph_idx]
+    M0 = eph_table["M0"].iloc[eph_idx]
+    DeltaN = eph_table["DeltaN"].iloc[eph_idx]
+    toe = eph_table["Toe"].iloc[eph_idx]
+
+    # Clock reference time.
+    # We avoid UTC -> GPS leap-second conversion here because NAV time is already
+    # treated as GPS-system time.
+    toc_time = eph_table["time"].iloc[eph_idx]
+    _, toc_sow = rinex_nav_datetime_to_gpsweek_and_sow(toc_time)
+
+    # Time since clock reference epoch
+    dt_clock = check_gps_week_crossing(t_gps_sow - toc_sow)
+
+    # Relativistic correction
+    mu = 3.986005e14
+    A = sqrtA ** 2
+
+    tk = check_gps_week_crossing(t_gps_sow - toe)
+
+    n0 = np.sqrt(mu / A**3)
+    n = n0 + DeltaN
+
+    Mk = M0 + n * tk
+    Ek = solve_kepler_E(Mk, e)
+
+    dtr = F * e * sqrtA * np.sin(Ek)
+
+    # L1 C/A convention
+    dtsv = af0 + af1 * dt_clock + af2 * dt_clock**2 + dtr - TGD
+
+    return float(dtsv)
+
+
+def get_obs_code_type(obs):
+    """
+    Pick preferred L1 pseudorange observable from an xarray OBS object.
+
+    Preference order:
+      C1C, C1, C1W, C1P
+    """
+    preferred = ["C1C", "C1", "C1W", "C1P"]
+
+    for key in preferred:
+        if key in obs.data_vars:
+            return key
+
+    raise ValueError(
+        f"No L1 pseudorange observable found. Available: {list(obs.data_vars)}"
+    )
+
+
+def sv_string_to_int(sv):
+    """
+    Convert GPS satellite string like 'G01' to integer PRN 1.
+    """
+    sv = str(sv)
+
+    if not sv.startswith("G"):
+        raise ValueError(f"Not GPS: {sv}")
+
+    return int(sv[1:])
+
+
+def clean_delay_from_obs_epoch(
+    SV: int,
+    t_rx_sow: float,
+    rx_ecef,
+    P_obs=None,
+    include_sat_clock=True,
+    iterations=6,
+):
+    """
+    Compute clean simulator delay for one satellite at one receiver epoch.
+
+    Inputs:
+        SV:
+            GPS satellite PRN as integer.
+
+        t_rx_sow:
+            Receiver time in GPS seconds-of-week.
+
+        rx_ecef:
+            Receiver ECEF coordinates in meters.
+
+        P_obs:
+            Observed pseudorange.
+            Used only as an initial transmit-time guess.
+
+        include_sat_clock:
+            If True, apply satellite clock correction.
+
+        iterations:
+            Number of transmit-time refinement iterations.
+
+    Returns:
+        Dictionary containing delay, pseudorange, satellite clock correction,
+        satellite ECEF position, and selected ephemeris index.
+    """
+    rx_ecef = np.asarray(rx_ecef, dtype=float).reshape(3)
+
+    # Select ephemeris once using receive time.
+    # This same eph_idx is then used during transmit-time iteration.
+    eph_idx = select_eph_idx(SV, t_rx_sow)
+
+    # Use OBS pseudorange only as an initial transmit-time guess.
+    if P_obs is not None and np.isfinite(P_obs):
+        t_tx_sow = t_rx_sow - float(P_obs) / C
+    else:
+        # Rough light-time guess for GNSS satellite range
+        t_tx_sow = t_rx_sow - 0.075
+
+    # Iteratively refine transmit time
+    for _ in range(iterations):
+        sat_ecef = ehpm_to_ECEFlocation_at_time(SV, t_tx_sow, eph_idx)
+
+        rho = np.linalg.norm(sat_ecef - rx_ecef)
+
+        if include_sat_clock:
+            dtsv = satellite_clock_correction(SV, t_tx_sow, eph_idx)
+        else:
+            dtsv = 0.0
+
+        # Pseudorange model
+        pseudorange = rho - C * dtsv
+
+        # Update transmit time
+        t_tx_sow = t_rx_sow - pseudorange / C
+
+    # Final satellite position and corrections
+    sat_ecef = ehpm_to_ECEFlocation_at_time(SV, t_tx_sow, eph_idx)
+    rho = np.linalg.norm(sat_ecef - rx_ecef)
+
+    if include_sat_clock:
+        dtsv = satellite_clock_correction(SV, t_tx_sow, eph_idx)
+    else:
+        dtsv = 0.0
+
+    pseudorange = rho - C * dtsv
+    delay_seconds = pseudorange / C
+
+    return {
+        "SV": SV,
+        "t_rx_sow": float(t_rx_sow),
+        "t_tx_sow": float(t_tx_sow),
+        "delay_seconds": float(delay_seconds),
+        "pseudorange_m": float(pseudorange),
+        "rho_m": float(rho),
+        "sat_clock_s": float(dtsv),
+        "sat_clock_m": float(C * dtsv),
+        "eph_idx": int(eph_idx),
+        "sat_x": float(sat_ecef[0]),
+        "sat_y": float(sat_ecef[1]),
+        "sat_z": float(sat_ecef[2]),
+        "P_obs": None if P_obs is None else float(P_obs),
+    }
+
+
+def build_delay_list_from_obs_df_simple(
+    df,
+    rx_ecef,
+    max_epochs=None,
+    include_sat_clock=True,
+):
+    """
+    Build clean simulator delay list from your OBS DataFrame format.
+
+    Expected columns:
+
+        time | sv | C1C_m | D1C_hz
+
+    Uses:
+        time:
+            Receiver epoch timestamp.
+
+        sv:
+            Visible GPS satellite, e.g. 'G01'.
+
+        C1C_m:
+            Observed pseudorange.
+            Used only as initial transmit-time guess.
+
+    Final delay is calculated from:
+        NAV ephemeris + receiver ECEF + satellite clock correction
+
+    It is not simply copied from raw C1C_m.
+    """
+
+    required = {"time", "sv", "C1C_m"}
+    missing = required - set(df.columns)
+
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    rows = []
+
+    work = df.copy()
+    work["time"] = pd.to_datetime(work["time"])
+
+    # One timestamp per receiver epoch
+    obs_times = (
+        work["time"]
+        .dropna()
+        .drop_duplicates()
+        .sort_values()
+        .to_numpy()
+    )
+
+    if max_epochs is not None:
+        obs_times = obs_times[:max_epochs]
+
+    for epoch_idx, obs_time in enumerate(obs_times):
+
+        # Convert receiver observation time UTC -> GPS week/SOW
+        gps_week, t_rx_sow = utc_datetime_to_gpsweek_and_sow(obs_time)
+
+        # Select all observations for this receiver epoch
+        epoch_rows = work[work["time"] == obs_time]
+
+        for _, row in epoch_rows.iterrows():
+            sv_str = str(row["sv"])
+
+            # GPS only
+            if not sv_str.startswith("G"):
+                continue
+
+            SV = int(sv_str[1:])
+
+            if SV not in SV_input_dict:
+                continue
+
+            sv_key = SV_input_dict[SV]
+
+            if sv_key not in tables:
+                continue
+
+            P_obs = float(row["C1C_m"])
+
+            if not np.isfinite(P_obs):
+                continue
+
+            try:
+                out = clean_delay_from_obs_epoch(
+                    SV=SV,
+                    t_rx_sow=t_rx_sow,
+                    rx_ecef=rx_ecef,
+                    P_obs=P_obs,
+                    include_sat_clock=include_sat_clock,
+                )
+
+                out["epoch_idx"] = epoch_idx
+                out["obs_time"] = pd.Timestamp(obs_time)
+                out["gps_week"] = gps_week
+                out["sv_str"] = sv_str
+                out["C1C_m"] = P_obs
+
+                if "D1C_hz" in row:
+                    out["D1C_hz"] = row["D1C_hz"]
+
+                rows.append(out)
+
+            except Exception as err:
+                print(f"Failed {sv_str} at {pd.Timestamp(obs_time)}: {err}")
+
+    return pd.DataFrame(rows)
+
+
+
+
+
+    #KEEEEEP
+import numpy as np
+
+C_MPS = 299_792_458.0
+
+def sample_chip_sequences_to_iq_file_variable_delay_doppler(
+    chip_streams_01,
+    delay_list,
+    out_file="gps_signal_iq_fc32.dat",
+    chip_rate=1.023e6,
+    fs=4.0e6,
+    doppler_hz_chunks=None,
+    phase0=None,
+    amplitudes=None,
+    use_relative_delays=False,
+    common_delay_s=0.0,
+    noise_std=0.02,
+    rng=None,
+    epoch_times_s=None,
+    max_chunks=None,
+    verbose=True,
+):
+    """
+    Generate complex baseband IQ from chip streams with time-varying code delay
+    and time-varying carrier Doppler.
+
+    Important:
+    - delay_list[s, k] is the total propagation/code delay for satellite s at epoch k.
+    - doppler_hz_chunks[s, k] is the carrier Doppler for satellite s at epoch k.
+    - epoch_times_s defines the time axis of those values.
+    - Code timing is driven by t - delay(t), so satellites can catch up / drift apart.
+    """
+
+    if len(chip_streams_01) == 0:
+        raise ValueError("Need at least one chip stream")
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    n_sats = len(chip_streams_01)
+
+    chips = []
+    for k, chips_01 in enumerate(chip_streams_01):
+        arr = np.asarray(chips_01, dtype=np.uint8)
+        if not np.all((arr == 0) | (arr == 1)):
+            raise ValueError(f"Chip stream {k} contains values other than 0/1")
+        chips.append(arr)
+    lengths = [len(c) for c in chips]
+    if len(set(lengths)) != 1:
+        raise ValueError(f"All chip streams must have same length, got {lengths}")
+
+    n_chips = lengths[0]
+    signal_duration_s = n_chips / chip_rate
+    n_signal_samples = int(np.ceil(signal_duration_s * fs))
+
+    delay_list = np.asarray(delay_list, dtype=np.float64)
+    if delay_list.ndim != 2:
+        raise ValueError("delay_list must be 2D")
+    if delay_list.shape[0] != n_sats:
+        raise ValueError("delay_list first dimension must equal number of satellites")
+
+    n_epochs = delay_list.shape[1]
+    if n_epochs < 1:
+        raise ValueError("delay_list must contain at least one epoch")
+
+    if epoch_times_s is None:
+        epoch_times_s = np.arange(n_epochs, dtype=np.float64)
+    else:
+        epoch_times_s = np.asarray(epoch_times_s, dtype=np.float64)
+        if epoch_times_s.ndim != 1 or len(epoch_times_s) != n_epochs:
+            raise ValueError("epoch_times_s must have shape (n_epochs,)")
+        if np.any(np.diff(epoch_times_s) <= 0):
+            raise ValueError("epoch_times_s must be strictly increasing")
+        if epoch_times_s[0] < 0.0:
+            raise ValueError("epoch_times_s must start at or after 0")
+
+    # Shift epoch_times so signal starts at t=0
+    epoch_times_s = epoch_times_s - epoch_times_s[0]
+
+    if use_relative_delays:
+        delay_list = delay_list - np.min(delay_list, axis=0, keepdims=True)
+
+    delay_list = delay_list + float(common_delay_s)
+
+    if phase0 is None:
+        phase0 = np.zeros(n_sats, dtype=np.float64)
+    else:
+        phase0 = np.asarray(phase0, dtype=np.float64)
+        if len(phase0) != n_sats:
+            raise ValueError("phase0 must have same length as chip_streams_01")
+
+    if amplitudes is None:
+        amplitudes = np.ones(n_sats, dtype=np.float32)
+    else:
+        amplitudes = np.asarray(amplitudes, dtype=np.float32)
+        if len(amplitudes) != n_sats:
+            raise ValueError("amplitudes must have same length as chip_streams_01")
+
+    if doppler_hz_chunks is None:
+        doppler_hz_chunks = np.zeros((n_sats, n_epochs), dtype=np.float64)
+    else:
+        doppler_hz_chunks = np.asarray(doppler_hz_chunks, dtype=np.float64)
+        if doppler_hz_chunks.ndim != 2:
+            raise ValueError("doppler_hz_chunks must be 2D")
+        if doppler_hz_chunks.shape == (n_sats, n_epochs):
+            pass
+        elif doppler_hz_chunks.shape == (n_epochs, n_sats):
+            doppler_hz_chunks = doppler_hz_chunks.T
+        else:
+            raise ValueError(
+                f"doppler_hz_chunks must have shape ({n_sats}, {n_epochs}) "
+                f"or ({n_epochs}, {n_sats}), got {doppler_hz_chunks.shape}"
+            )
+
+    # Build segments from epoch grid
+    if n_epochs == 1:
+        seg_start_times = np.array([0.0], dtype=np.float64)
+        seg_end_times = np.array([signal_duration_s], dtype=np.float64)
+    else:
+        seg_start_times = epoch_times_s.copy()
+        seg_end_times = np.empty_like(seg_start_times)
+        seg_end_times[:-1] = epoch_times_s[1:]
+        seg_end_times[-1] = signal_duration_s
+
+    # Clip to signal duration
+    valid_seg = seg_start_times < signal_duration_s
+    seg_start_times = seg_start_times[valid_seg]
+    seg_end_times = np.minimum(seg_end_times[valid_seg], signal_duration_s)
+
+    if max_chunks is not None:
+        n_segments = min(len(seg_start_times), int(max_chunks))
+        seg_start_times = seg_start_times[:n_segments]
+        seg_end_times = seg_end_times[:n_segments]
+    else:
+        n_segments = len(seg_start_times)
+
+    phase_acc = phase0.astype(np.float64).copy()
+    chip_rate_over_fs = chip_rate / fs
+    two_pi = 2.0 * np.pi
+
+    if verbose:
+        print("delay_list shape:", delay_list.shape)
+        print("doppler_hz_chunks shape:", doppler_hz_chunks.shape)
+        print("epoch_times_s[0:5]:", epoch_times_s[:5])
+        print("signal duration (s):", signal_duration_s)
+        print("signal samples:", n_signal_samples)
+        print("segments:", n_segments)
+
+    total_written = 0
+
+    with open(out_file, "wb") as f:
+        for seg_idx in range(n_segments):
+            t0 = seg_start_times[seg_idx]
+            t1 = seg_end_times[seg_idx]
+
+            if t1 <= t0:
+                continue
+
+            start = int(np.round(t0 * fs))
+            stop = int(np.round(t1 * fs))
+            start = max(start, 0)
+            stop = min(stop, n_signal_samples)
+
+            n_chunk_samples = stop - start
+            if n_chunk_samples <= 0:
+                continue
+
+            sample_idx = np.arange(start, stop, dtype=np.float64)
+            t_abs = sample_idx / fs
+            dt = t_abs - t0
+
+            i_sum = np.zeros(n_chunk_samples, dtype=np.float32)
+            q_sum = np.zeros(n_chunk_samples, dtype=np.float32)
+
+            seg_duration = t1 - t0
+            if seg_duration > 0:
+                alpha = (t_abs - t0) / seg_duration
+            else:
+                alpha = np.zeros_like(t_abs)
+
+            for s in range(n_sats):
+                d0 = delay_list[s, seg_idx]
+                d1 = delay_list[s, seg_idx + 1] if seg_idx < n_epochs - 1 else d0
+
+                f0 = doppler_hz_chunks[s, seg_idx]
+                f1 = doppler_hz_chunks[s, seg_idx + 1] if seg_idx < n_epochs - 1 else f0
+
+                # code timing uses time-varying delay, not frozen initial delay
+                delay_t = d0 + (d1 - d0) * alpha
+                src_sample_idx = sample_idx - delay_t * fs
+
+                valid = (src_sample_idx >= 0.0) & (src_sample_idx < n_signal_samples - 1)
+                if not np.any(valid):
+                    if seg_duration > 0:
+                        fdot = (f1 - f0) / seg_duration
+                        phase_end = phase_acc[s] + two_pi * (
+                            f0 * seg_duration + 0.5 * fdot * seg_duration * seg_duration
+                        )
+                        phase_acc[s] = phase_end % two_pi
+                    continue
+
+                # Carrier phase continuous with linearly varying Doppler
+                if seg_duration > 0:
+                    fdot = (f1 - f0) / seg_duration
+                    phase_chunk = phase_acc[s] + two_pi * (
+                        f0 * dt + 0.5 * fdot * dt * dt
+                    )
+                    phase_end = phase_acc[s] + two_pi * (
+                        f0 * seg_duration + 0.5 * fdot * seg_duration * seg_duration
+                    )
+                else:
+                    phase_chunk = np.full_like(dt, phase_acc[s])
+                    phase_end = phase_acc[s]
+
+                cos_chunk = np.cos(phase_chunk).astype(np.float32)
+                sin_chunk = np.sin(phase_chunk).astype(np.float32)
+                phase_acc[s] = phase_end % two_pi
+
+                chip_pos = src_sample_idx[valid] * chip_rate_over_fs
+
+                chip_i0 = np.floor(chip_pos).astype(np.int64)
+                frac_chip = (chip_pos - chip_i0).astype(np.float32)
+
+                chip_i0 = np.clip(chip_i0, 0, n_chips - 1)
+                chip_i1 = np.clip(chip_i0 + 1, 0, n_chips - 1)
+
+                c0 = (2.0 * chips[s][chip_i0].astype(np.float32)) - 1.0
+                c1 = (2.0 * chips[s][chip_i1].astype(np.float32)) - 1.0
+
+                baseband = (1.0 - frac_chip) * c0 + frac_chip * c1
+
+                i_sum[valid] += amplitudes[s] * baseband * cos_chunk[valid]
+                q_sum[valid] += amplitudes[s] * baseband * sin_chunk[valid]
+
+            if noise_std > 0:
+                i_sum += rng.normal(0.0, noise_std, n_chunk_samples).astype(np.float32)
+                q_sum += rng.normal(0.0, noise_std, n_chunk_samples).astype(np.float32)
+
+            iq = np.empty(2 * n_chunk_samples, dtype=np.float32)
+            iq[0::2] = i_sum
+            iq[1::2] = q_sum
+            iq.tofile(f)
+
+            total_written += n_chunk_samples
+
+            if verbose:
+                print(
+                    f"segment {seg_idx + 1}/{n_segments}: "
+                    f"t=[{t0:.6f}, {t1:.6f}) s, samples={n_chunk_samples}"
+                )
+
+    return total_written
